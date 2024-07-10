@@ -1,0 +1,209 @@
+import spacy
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+from wordcloud import WordCloud, STOPWORDS, ImageColorGenerator
+
+df = pd.read_csv('/content/drive/MyDrive/BI Research/Dataset-SA.csv')
+print(df.head())
+print(df.isnull().sum())
+
+import nltk
+import re
+nltk.download('stopwords')
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from sklearn.feature_extraction.text import TfidfVectorizer
+stemmer = nltk.SnowballStemmer("english")
+import string
+stopword=set(stopwords.words('english'))
+
+nltk.download('punkt')
+def clean_text(text):
+    text = str(text).lower()
+    text = re.sub('\[.*?\]', '', text)
+    text = re.sub('https?://\S+|www\.\S+', '', text)
+    text = re.sub('<.*?>+', '', text)
+    text = re.sub('[%s]' % re.escape(string.punctuation), '', text)
+    text = re.sub('\n', '', text)
+    text = re.sub('\w*\d\w*', '', text)
+    text = [word for word in text.split(' ') if word not in stopword]
+    text=" ".join(text)
+    text = [stemmer.stem(word) for word in text.split(' ')]
+    text=" ".join(text)
+    return text
+
+
+df["Review"] = df["Review"].apply(clean_text)
+
+stop_words = set(stopwords.words('english'))
+df["Review"] = df["Review"].apply(lambda x: ' '.join([word for word in word_tokenize(x) if word not in stop_words]))
+
+text = " ".join(i for i in df.Review)
+stopwords = set(STOPWORDS)
+wordcloud = WordCloud(stopwords=stopwords,
+                      background_color="white").generate(text)
+plt.figure( figsize=(15,10))
+plt.imshow(wordcloud, interpolation='bilinear')
+plt.axis("off")
+plt.show()
+
+nltk.download('vader_lexicon')
+
+analyzer = SentimentIntensityAnalyzer()
+df["Positive"] = [analyzer.polarity_scores(i)["pos"] for i in df["Review"]]
+df["Negative"] = [analyzer.polarity_scores(i)["neg"] for i in df["Review"]]
+df["Neutral"] = [analyzer.polarity_scores(i)["neu"] for i in df["Review"]]
+df["Compound"] = [analyzer.polarity_scores(review)["compound"] for review in df["Review"]]
+
+
+df["Sentiment"] = df["Compound"].apply(lambda x: 'Positive' if x >= 0.05 else ('Negative' if x <= -0.05 else 'Neutral'))
+
+
+sentiment_counts = df["Sentiment"].value_counts()
+
+negative_reviews = df[df["Sentiment"] == "Negative"]
+
+df = df[["Review", "Positive", "Negative", "Neutral"]]
+print(df.head())
+
+import matplotlib.pyplot as plt
+
+
+plt.figure(figsize=(8, 6))
+plt.bar(sentiment_counts.index, sentiment_counts.values, color=['blue', 'green', 'red'])
+plt.xlabel('Sentiment')
+plt.ylabel('Number of Reviews')
+plt.title('Number of Positive, Negative, and Neutral Reviews')
+plt.show()
+
+df = pd.read_csv('/content/drive/MyDrive/BI Research/Dataset-SA.csv')
+product_name_to_id = {name: idx for idx, name in enumerate(df['product_name'].unique(), start=1)}
+
+
+df['product_id'] = df['product_name'].map(product_name_to_id)
+
+# Save the updated dataset to the same CSV file
+df.to_csv('/content/drive/MyDrive/BI Research/Dataset-SA.csv', index=False)
+
+print("Product IDs added and saved to flipkart_reviews_with_product_id.csv")
+
+print(df.columns)
+
+#aspect analysis to suggest decisions
+
+nlp = spacy.load('en_core_web_sm')
+
+
+def extract_aspects(text):
+    doc = nlp(text)
+    aspects = [chunk.text for chunk in doc.noun_chunks]
+    return aspects
+
+# Apply aspect extraction to negative reviews
+negative_reviews['Aspects'] = negative_reviews['Review'].apply(extract_aspects)
+
+def get_aspect_sentiments(review, aspects):
+    aspect_sentiments = {}
+    for aspect in aspects:
+        if aspect in review:
+            score = analyzer.polarity_scores(aspect)
+            aspect_sentiments[aspect] = score['compound']
+    return aspect_sentiments
+
+negative_reviews['Aspect_Sentiments'] = negative_reviews.apply(lambda x: get_aspect_sentiments(x['Review'], x['Aspects']), axis=1)
+
+
+print(negative_reviews[['Review', 'Aspects', 'Aspect_Sentiments']].head())
+
+from collections import defaultdict
+
+
+def aggregate_aspect_sentiments(df):
+    aspect_sentiments = defaultdict(lambda: defaultdict(list))
+    for _, row in df.iterrows():
+        for aspect, sentiment in row['Aspect_Sentiments'].items():
+            aspect_sentiments[aspect]['sentiments'].append(sentiment)
+    for aspect, data in aspect_sentiments.items():
+        data['average_sentiment'] = sum(data['sentiments']) / len(data['sentiments'])
+    return aspect_sentiments
+
+
+aggregated_aspect_sentiments = aggregate_aspect_sentiments(negative_reviews)
+
+def make_decision(aspect, average_sentiment):
+    if average_sentiment < -0.1:
+        return f"Investigate issues related to {aspect}"
+    else:
+        return f"No specific action needed for {aspect}"
+
+
+decisions = {}
+for aspect, data in aggregated_aspect_sentiments.items():
+    decisions[aspect] = make_decision(aspect, data['average_sentiment'])
+
+
+for aspect, decision in decisions.items():
+    print(f"Aspect: {aspect} - Decision: {decision}")
+
+from sklearn.metrics import precision_recall_fscore_support
+
+# Example ground truth and predictions (replace with your actual data)
+ground_truth = {
+    'price': 'Negative',
+    'quality': 'Positive',
+    'customer service': 'Negative'
+}
+
+predictions = {
+    'price': 'Negative',
+    'quality': 'Positive',
+    # 'customer service': 'Neutral'  # Example of missing prediction
+}
+
+# Convert sentiment labels to numeric for sklearn metrics
+labels = ['Negative', 'Positive', 'Neutral']
+
+# Prepare lists for sklearn
+y_true = []
+y_pred = []
+
+for aspect in labels:
+    y_true.append(ground_truth.get(aspect, 'Neutral'))
+    y_pred.append(predictions.get(aspect, 'Neutral'))
+
+# Calculate precision, recall, F1-score, and support
+precision, recall, f1_score, _ = precision_recall_fscore_support(y_true, y_pred, labels=labels, average=None)
+
+# Print results for each aspect
+for i, aspect in enumerate(labels):
+    print(f"Aspect: {aspect}")
+    print(f"Precision: {precision[i]:.2f}")
+    print(f"Recall: {recall[i]:.2f}")
+    print(f"F1-score: {f1_score[i]:.2f}")
+    print()
+
+# calculate overall metrics
+overall_precision = precision.mean()
+overall_recall = recall.mean()
+overall_f1_score = f1_score.mean()
+
+print("Overall Metrics:")
+print(f"Overall Precision: {overall_precision:.2f}")
+print(f"Overall Recall: {overall_recall:.2f}")
+print(f"Overall F1-score: {overall_f1_score:.2f}")
+
+correct_count = 0
+total_count = len(ground_truth)
+
+for aspect, true_label in ground_truth.items():
+    if aspect in predictions:
+        predicted_label = predictions[aspect]
+        if predicted_label == true_label:
+            correct_count += 1
+
+# Calculate accuracy percentage
+accuracy_percentage = (correct_count / total_count) * 100
+
+print(f"Accuracy Percentage: {accuracy_percentage:.2f}%")
